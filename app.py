@@ -6,6 +6,9 @@ import uuid
 import secrets
 import plistlib
 import threading
+import subprocess
+import tempfile
+import shutil
 
 from datetime import datetime, timezone
 
@@ -43,11 +46,12 @@ BASE_URL = os.environ.get(
     "https://shenudidkh.onrender.com"
 ).rstrip("/")
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "panhakoko99")
 
-# Use /var/data only if you have mounted a Render Persistent Disk.
-# Otherwise, use /tmp for temporary storage.
-DATA_DIR = os.environ.get("DATA_DIR", "/tmp/shenudid")
+DATA_DIR = os.environ.get(
+    "DATA_DIR",
+    "/tmp/shenudid"
+)
 
 DATA_FILE = os.path.join(DATA_DIR, "udids.json")
 
@@ -64,7 +68,19 @@ file_lock = threading.Lock()
 
 
 # ==========================================
-# DATABASE
+# CHECK OPENSSL
+# ==========================================
+
+OPENSSL = shutil.which("openssl")
+
+if not OPENSSL:
+    raise RuntimeError(
+        "OpenSSL is not installed on this Render environment."
+    )
+
+
+# ==========================================
+# SAVE UDID
 # ==========================================
 
 def save_udid(udid, ios_version):
@@ -117,7 +133,7 @@ def save_udid(udid, ios_version):
 
 
 # ==========================================
-# APPLE PLIST RESPONSE
+# PLIST RESPONSE
 # ==========================================
 
 def plist_response(data, filename=None):
@@ -142,7 +158,7 @@ def plist_response(data, filename=None):
 
 
 # ==========================================
-# ENROLLMENT TOKEN
+# TOKEN SYSTEM
 # ==========================================
 
 def create_token():
@@ -190,208 +206,132 @@ content="width=device-width, initial-scale=1">
 }
 
 body {
-
     margin: 0;
-
     background: #f6f7f9;
-
     color: #202124;
-
-    font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
 }
 
 nav {
-
     height: 70px;
-
     background: white;
-
     border-bottom: 1px solid #eee;
-
     display: flex;
-
     align-items: center;
-
     justify-content: space-between;
-
     padding: 0 7%;
 }
 
 .logo {
-
     font-size: 21px;
-
     font-weight: 750;
-
     color: #171717;
 }
 
 .logo span {
-
     color: #3978e8;
 }
 
 .container {
-
     max-width: 650px;
-
     margin: 75px auto;
-
     padding: 20px;
 }
 
 .card {
-
     background: white;
-
     border: 1px solid #e9e9e9;
-
     border-radius: 18px;
-
     padding: 38px;
-
     box-shadow: 0 8px 35px rgba(0,0,0,.035);
-
     text-align: center;
 }
 
 .icon {
-
     width: 65px;
-
     height: 65px;
-
     border-radius: 18px;
-
     background: #edf3ff;
-
     display: flex;
-
     align-items: center;
-
     justify-content: center;
-
     margin: 0 auto 22px;
-
     font-size: 30px;
 }
 
 h1 {
-
     font-size: 32px;
-
     margin: 0 0 12px;
 }
 
 p {
-
     color: #737780;
-
     line-height: 1.7;
-
     font-size: 15px;
 }
 
 button {
-
     width: 100%;
-
     border: 0;
-
     border-radius: 10px;
-
     padding: 16px;
-
     background: #3478f6;
-
     color: white;
-
     font-size: 16px;
-
     font-weight: 650;
-
     cursor: pointer;
-
     margin-top: 18px;
 }
 
 button:hover {
-
     background: #2465db;
 }
 
 .notice {
-
     text-align: left;
-
     background: #f7f8fa;
-
     padding: 17px;
-
     border-radius: 10px;
-
     margin-top: 24px;
-
     font-size: 13px;
-
     color: #656b75;
-
     line-height: 1.7;
 }
 
 .consent {
-
     display: flex;
-
     gap: 10px;
-
     text-align: left;
-
     align-items: flex-start;
-
     margin-top: 22px;
-
     font-size: 13px;
-
     color: #555;
 }
 
 .consent input {
-
     margin-top: 3px;
 }
 
 footer {
-
     text-align: center;
-
     color: #999;
-
     font-size: 12px;
-
     margin-top: 30px;
 }
 
 @media(max-width:600px) {
 
     .container {
-
         margin: 35px auto;
-
         padding: 14px;
     }
 
     .card {
-
         padding: 28px 20px;
     }
 
     h1 {
-
         font-size: 27px;
     }
 }
@@ -478,7 +418,7 @@ footer {
 
 
 # ==========================================
-# ROUTES
+# HOME
 # ==========================================
 
 @app.route("/")
@@ -486,6 +426,10 @@ def home():
 
     return render_template_string(HOME)
 
+
+# ==========================================
+# HEALTH CHECK
+# ==========================================
 
 @app.route("/health")
 def health():
@@ -518,7 +462,7 @@ def start():
 
 
 # ==========================================
-# DOWNLOAD MOBILECONFIG
+# DOWNLOAD PROFILE
 # ==========================================
 
 @app.route("/profile/<token>.mobileconfig")
@@ -590,15 +534,69 @@ def profile_service(token):
 
         return "ShenUDID enrollment service is ready.", 200
 
+    raw_data = request.get_data()
+
+    if not raw_data or len(raw_data) > 2 * 1024 * 1024:
+
+        return "Invalid or oversized enrollment request.", 400
+
     try:
 
-        data = plistlib.loads(
-            request.get_data()
-        )
+        # Apple sends a CMS-signed plist.
+        # Extract the signed plist using OpenSSL.
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+
+            input_file = os.path.join(
+                temp_dir,
+                "request.der"
+            )
+
+            output_file = os.path.join(
+                temp_dir,
+                "request.plist"
+            )
+
+            with open(input_file, "wb") as f:
+                f.write(raw_data)
+
+            result = subprocess.run(
+                [
+                    OPENSSL,
+                    "cms",
+                    "-verify",
+                    "-inform",
+                    "DER",
+                    "-binary",
+                    "-noverify",
+                    "-in",
+                    input_file,
+                    "-out",
+                    output_file
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+
+            if result.returncode != 0:
+
+                app.logger.error(
+                    "Apple CMS verification failed: %s",
+                    result.stderr[:2000]
+                )
+
+                return "Apple signed request verification failed.", 400
+
+            with open(output_file, "rb") as f:
+
+                data = plistlib.loads(f.read())
 
         if not isinstance(data, dict):
 
-            return "Invalid profile service data.", 400
+            return "Invalid device information.", 400
+
+        # Read requested attributes.
 
         udid = data.get("UDID")
 
@@ -616,6 +614,8 @@ def profile_service(token):
 
         ios_version = ios_version.strip()
 
+        # Validate UDID.
+
         if not re.fullmatch(
             r"[0-9A-F]{40}",
             udid
@@ -623,17 +623,27 @@ def profile_service(token):
 
             return "Invalid UDID format.", 400
 
+        # Validate version.
+
         if not re.fullmatch(
             r"[0-9A-Za-z._-]{1,32}",
             ios_version
         ):
 
-            return "Invalid iOS version.", 400
+            return "Invalid iOS version format.", 400
+
+        # Save device information.
 
         save_udid(
             udid,
             ios_version
         )
+
+        app.logger.info(
+            "ShenUDID enrollment completed."
+        )
+
+        # Return profile response.
 
         response_profile = {
 
@@ -648,6 +658,9 @@ def profile_service(token):
             "PayloadUUID":
                 str(uuid.uuid4()),
 
+            "PayloadType":
+                "Configuration",
+
             "PayloadVersion": 1
         }
 
@@ -655,17 +668,25 @@ def profile_service(token):
             response_profile
         )
 
+    except subprocess.TimeoutExpired:
+
+        app.logger.exception(
+            "Apple request processing timed out."
+        )
+
+        return "Request processing timed out.", 500
+
     except Exception:
 
         app.logger.exception(
-            "ShenUDID enrollment failed"
+            "ShenUDID enrollment failed."
         )
 
-        return "Unable to process enrollment.", 400
+        return "Unable to process Apple enrollment request.", 400
 
 
 # ==========================================
-# ADMIN API
+# ADMIN UDID API
 # ==========================================
 
 @app.route("/admin/udids")
@@ -705,7 +726,7 @@ def admin_udids():
 
     except (ValueError, OSError):
 
-        return "Unable to read UDID database.", 500
+        return "Unable to read database.", 500
 
     return jsonify({
         "udids": records
