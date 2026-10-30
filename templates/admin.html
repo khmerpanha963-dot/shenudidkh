@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShenUDID Admin</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+    <a class="logo" href="/">ShenUDID Admin</a>
+    <a href="/admin/logout">Logout</a>
+</header>
+
+<main class="dashboard">
+    <h1>Device Records</h1>
+
+    <a class="export" href="/admin/export.csv">Export CSV</a>
+
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>UDID</th>
+                    <th>iOS Version</th>
+                    <th>Date</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for device in devices %}
+                <tr>
+                    <td>{{ device.udid }}</td>
+                    <td>{{ device.ios_version }}</td>
+                    <td>{{ device.created_at }}</td>
+                    <td>
+                        <form
+                            method="POST"
+                            action="/admin/delete/{{ device.udid }}"
+                        >
+                            <button class="delete" type="submit">
+                                Delete
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4">No devices found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</main>
+
+</body>
+</html>
