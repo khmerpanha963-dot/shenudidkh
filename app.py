@@ -1,744 +1,409 @@
-
 import os
 import re
 import json
 import uuid
 import secrets
-import plistlib
-import threading
 import subprocess
 import tempfile
-import shutil
-
+import plistlib
+from pathlib import Path
 from datetime import datetime, timezone
+from functools import wraps
 
 from flask import (
-    Flask,
-    request,
-    render_template_string,
-    redirect,
-    url_for,
-    make_response,
-    jsonify
+    Flask, request, render_template, redirect,
+    url_for, session, flash, abort, jsonify, Response
 )
-
-from itsdangerous import URLSafeTimedSerializer
-from itsdangerous.exc import BadSignature, SignatureExpired
-
-
-# ==========================================
-# SHENUDID CONFIGURATION
-# ==========================================
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from werkzeug.security import check_password_hash
 
 app = Flask(__name__)
 
-SECRET_KEY = os.environ.get("SECRET_KEY")
-
-if not SECRET_KEY:
-    raise RuntimeError(
-        "Please configure SECRET_KEY in Render environment variables."
-    )
-
-app.secret_key = SECRET_KEY
+app.secret_key = os.environ.get("SECRET_KEY", "")
+if not app.secret_key:
+    raise RuntimeError("SECRET_KEY environment variable is required.")
 
 BASE_URL = os.environ.get(
-    "BASE_URL",
-    "https://shenudidkh.onrender.com"
+    "BASE_URL", "https://shenudidkh.vercel.app"
 ).rstrip("/")
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "panhakoko99")
+DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-DATA_DIR = os.environ.get(
-    "DATA_DIR",
-    "/tmp/shenudid"
-)
+DB_FILE = DATA_DIR / "devices.json"
 
-DATA_FILE = os.path.join(DATA_DIR, "udids.json")
+TOKEN_TTL = 1800
 
-os.makedirs(DATA_DIR, exist_ok=True)
+PROFILE_SIGN_CERT = os.environ.get("PROFILE_SIGN_CERT", "")
+PROFILE_SIGN_KEY = os.environ.get("PROFILE_SIGN_KEY", "")
+APPLE_CA_FILE = os.environ.get("APPLE_CA_FILE", "")
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 
 serializer = URLSafeTimedSerializer(
-    SECRET_KEY,
-    salt="shenudid-enrollment-v1"
+    app.secret_key,
+    salt="shenudid-enrollment"
 )
 
-MAX_TOKEN_AGE = 3600
 
-file_lock = threading.Lock()
-
-
-# ==========================================
-# CHECK OPENSSL
-# ==========================================
-
-OPENSSL = shutil.which("openssl")
-
-if not OPENSSL:
-    raise RuntimeError(
-        "OpenSSL is not installed on this Render environment."
-    )
-
-
-# ==========================================
-# SAVE UDID
-# ==========================================
-
-def save_udid(udid, ios_version):
-
-    with file_lock:
-
-        records = []
-
-        if os.path.exists(DATA_FILE):
-
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    records = json.load(f)
-
-                if not isinstance(records, list):
-                    records = []
-
-            except (ValueError, OSError):
-                records = []
-
-        existing = next(
-            (
-                item for item in records
-                if item.get("udid") == udid
-            ),
-            None
-        )
-
-        now = datetime.now(timezone.utc).isoformat()
-
-        if existing:
-
-            existing["ios_version"] = ios_version
-            existing["updated_at"] = now
-
-        else:
-
-            records.append({
-                "udid": udid,
-                "ios_version": ios_version,
-                "created_at": now
-            })
-
-        temp_file = DATA_FILE + ".tmp"
-
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(records, f, indent=4)
-
-        os.replace(temp_file, DATA_FILE)
-
-
-# ==========================================
-# PLIST RESPONSE
-# ==========================================
-
-def plist_response(data, filename=None):
-
-    response = make_response(
-        plistlib.dumps(data, fmt=plistlib.FMT_XML)
-    )
-
-    response.headers["Content-Type"] = (
-        "application/x-apple-aspen-config"
-    )
-
-    response.headers["Cache-Control"] = "no-store"
-
-    if filename:
-
-        response.headers["Content-Disposition"] = (
-            f'attachment; filename="{filename}"'
-        )
-
-    return response
-
-
-# ==========================================
-# TOKEN SYSTEM
-# ==========================================
-
-def create_token():
-
-    return serializer.dumps({
-        "nonce": secrets.token_urlsafe(24)
-    })
-
-
-def validate_token(token):
+def load_devices():
+    if not DB_FILE.exists():
+        return []
 
     try:
-
-        return serializer.loads(
-            token,
-            max_age=MAX_TOKEN_AGE
-        )
-
-    except (BadSignature, SignatureExpired):
-
-        return None
-
-
-# ==========================================
-# HOME PAGE
-# ==========================================
-
-HOME = """
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-
-<meta charset="UTF-8">
-
-<meta name="viewport"
-content="width=device-width, initial-scale=1">
-
-<title>ShenUDID</title>
-
-<style>
-
-* {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    background: #f6f7f9;
-    color: #202124;
-    font-family: -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
-}
-
-nav {
-    height: 70px;
-    background: white;
-    border-bottom: 1px solid #eee;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 7%;
-}
-
-.logo {
-    font-size: 21px;
-    font-weight: 750;
-    color: #171717;
-}
-
-.logo span {
-    color: #3978e8;
-}
-
-.container {
-    max-width: 650px;
-    margin: 75px auto;
-    padding: 20px;
-}
-
-.card {
-    background: white;
-    border: 1px solid #e9e9e9;
-    border-radius: 18px;
-    padding: 38px;
-    box-shadow: 0 8px 35px rgba(0,0,0,.035);
-    text-align: center;
-}
-
-.icon {
-    width: 65px;
-    height: 65px;
-    border-radius: 18px;
-    background: #edf3ff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin: 0 auto 22px;
-    font-size: 30px;
-}
-
-h1 {
-    font-size: 32px;
-    margin: 0 0 12px;
-}
-
-p {
-    color: #737780;
-    line-height: 1.7;
-    font-size: 15px;
-}
-
-button {
-    width: 100%;
-    border: 0;
-    border-radius: 10px;
-    padding: 16px;
-    background: #3478f6;
-    color: white;
-    font-size: 16px;
-    font-weight: 650;
-    cursor: pointer;
-    margin-top: 18px;
-}
-
-button:hover {
-    background: #2465db;
-}
-
-.notice {
-    text-align: left;
-    background: #f7f8fa;
-    padding: 17px;
-    border-radius: 10px;
-    margin-top: 24px;
-    font-size: 13px;
-    color: #656b75;
-    line-height: 1.7;
-}
-
-.consent {
-    display: flex;
-    gap: 10px;
-    text-align: left;
-    align-items: flex-start;
-    margin-top: 22px;
-    font-size: 13px;
-    color: #555;
-}
-
-.consent input {
-    margin-top: 3px;
-}
-
-footer {
-    text-align: center;
-    color: #999;
-    font-size: 12px;
-    margin-top: 30px;
-}
-
-@media(max-width:600px) {
-
-    .container {
-        margin: 35px auto;
-        padding: 14px;
-    }
-
-    .card {
-        padding: 28px 20px;
-    }
-
-    h1 {
-        font-size: 27px;
-    }
-}
-
-</style>
-
-</head>
-
-<body>
-
-<nav>
-
-    <div class="logo">
-        Shen<span>UDID</span>
-    </div>
-
-    <div style="font-size:13px;color:#777">
-        iOS Device Service
-    </div>
-
-</nav>
-
-<div class="container">
-
-<div class="card">
-
-    <div class="icon">📱</div>
-
-    <h1>Get Your iPhone UDID</h1>
-
-    <p>
-        Identify your Apple device with our simple
-        UDID enrollment process.
-        Open this page in Safari on your iPhone.
-    </p>
-
-    <form action="/start" method="POST">
-
-        <label class="consent">
-
-            <input
-                type="checkbox"
-                name="consent"
-                value="yes"
-                required
-            >
-
-            <span>
-                I understand and consent to sharing my
-                device UDID and iOS version with ShenUDID.
-            </span>
-
-        </label>
-
-        <button type="submit">
-            Get My UDID →
-        </button>
-
-    </form>
-
-    <div class="notice">
-
-        <b>Privacy information</b><br>
-
-        Only your UDID and iOS version are requested.
-        IMEI, ICCID, contacts, photos and personal files
-        are not requested.
-
-        You can cancel installation at any time.
-
-    </div>
-
-</div>
-
-<footer>
-    © 2026 ShenUDID. Device identification service.
-</footer>
-
-</div>
-
-</body>
-</html>
-"""
-
-
-# ==========================================
-# HOME
-# ==========================================
-
-@app.route("/")
-def home():
-
-    return render_template_string(HOME)
-
-
-# ==========================================
-# HEALTH CHECK
-# ==========================================
-
-@app.route("/health")
-def health():
-
-    return jsonify({
-        "status": "ok",
-        "service": "ShenUDID"
-    })
-
-
-# ==========================================
-# START ENROLLMENT
-# ==========================================
-
-@app.route("/start", methods=["POST"])
-def start():
-
-    if request.form.get("consent") != "yes":
-
-        return "Consent is required.", 400
-
-    token = create_token()
-
-    return redirect(
-        url_for(
-            "download_profile",
-            token=token
-        )
+        return json.loads(DB_FILE.read_text("utf-8"))
+    except Exception:
+        return []
+
+
+def save_devices(devices):
+    temporary = DB_FILE.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(devices, indent=2),
+        encoding="utf-8"
     )
+    os.replace(temporary, DB_FILE)
 
 
-# ==========================================
-# DOWNLOAD PROFILE
-# ==========================================
+def admin_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        if not session.get("admin"):
+            return redirect(url_for("admin_login"))
 
-@app.route("/profile/<token>.mobileconfig")
-def download_profile(token):
+        return function(*args, **kwargs)
 
-    if not validate_token(token):
+    return wrapper
 
-        return "Invalid or expired enrollment session.", 403
 
-    service_url = (
-        BASE_URL
-        + url_for("profile_service", token=token)
-    )
-
+def create_profile(token):
     profile = {
-
+        "PayloadType": "Profile Service",
+        "PayloadVersion": 1,
+        "PayloadIdentifier": "com.shenudid.profile",
+        "PayloadUUID": str(uuid.uuid4()).upper(),
+        "PayloadDisplayName": "ShenUDID Enrollment",
+        "PayloadDescription": (
+            "Requests your device UDID and iOS version "
+            "with your permission."
+        ),
         "PayloadContent": {
-
-            "URL": service_url,
-
+            "URL": f"{BASE_URL}/profile-service/{token}",
             "DeviceAttributes": [
                 "UDID",
                 "VERSION"
             ]
-        },
-
-        "PayloadDescription":
-            "Requests permission to share your device UDID and iOS version.",
-
-        "PayloadDisplayName":
-            "ShenUDID Enrollment",
-
-        "PayloadIdentifier":
-            "com.shenudid.profile-service",
-
-        "PayloadOrganization":
-            "ShenUDID",
-
-        "PayloadType":
-            "Profile Service",
-
-        "PayloadUUID":
-            str(uuid.uuid4()),
-
-        "PayloadVersion": 1
+        }
     }
 
-    return plist_response(
+    return plistlib.dumps(
         profile,
-        "ShenUDID.mobileconfig"
+        fmt=plistlib.FMT_XML
     )
 
 
-# ==========================================
-# APPLE PROFILE SERVICE
-# ==========================================
+def openssl_command(arguments, data=None):
+    result = subprocess.run(
+        ["openssl"] + arguments,
+        input=data,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            result.stderr.decode("utf-8", "replace")
+        )
+
+    return result.stdout
+
+
+def verify_device_response(data):
+    if not APPLE_CA_FILE:
+        raise RuntimeError("APPLE_CA_FILE is not configured.")
+
+    if not Path(APPLE_CA_FILE).is_file():
+        raise RuntimeError("Apple CA certificate file not found.")
+
+    verified = openssl_command(
+        [
+            "cms",
+            "-verify",
+            "-inform", "DER",
+            "-binary",
+            "-CAfile", APPLE_CA_FILE,
+            "-purpose", "any"
+        ],
+        data
+    )
+
+    attributes = plistlib.loads(verified)
+
+    if not isinstance(attributes, dict):
+        raise ValueError("Invalid device response.")
+
+    return attributes
+
+
+def create_signed_response():
+    if not PROFILE_SIGN_CERT or not PROFILE_SIGN_KEY:
+        raise RuntimeError(
+            "Profile signing certificate and private key are required."
+        )
+
+    cert = Path(PROFILE_SIGN_CERT)
+    key = Path(PROFILE_SIGN_KEY)
+
+    if not cert.is_file() or not key.is_file():
+        raise RuntimeError("Profile signing files not found.")
+
+    response_profile = {
+        "PayloadType": "Configuration",
+        "PayloadVersion": 1,
+        "PayloadIdentifier": "com.shenudid.response",
+        "PayloadUUID": str(uuid.uuid4()).upper(),
+        "PayloadDisplayName": "ShenUDID Enrollment Complete",
+        "PayloadContent": []
+    }
+
+    xml = plistlib.dumps(
+        response_profile,
+        fmt=plistlib.FMT_XML
+    )
+
+    return openssl_command(
+        [
+            "cms",
+            "-sign",
+            "-binary",
+            "-nodetach",
+            "-outform", "DER",
+            "-signer", str(cert),
+            "-inkey", str(key)
+        ],
+        xml
+    )
+
+
+@app.get("/")
+def index():
+    return render_template("index.html")
+
+
+@app.post("/start")
+def start():
+    if request.form.get("consent") != "yes":
+        flash("Please accept the privacy notice.", "error")
+        return redirect(url_for("index"))
+
+    token = serializer.dumps({
+        "nonce": secrets.token_urlsafe(32)
+    })
+
+    return redirect(
+        url_for("download_profile", token=token)
+    )
+
+
+@app.get("/profile/<token>.mobileconfig")
+def download_profile(token):
+    try:
+        serializer.loads(token, max_age=TOKEN_TTL)
+    except (BadSignature, SignatureExpired):
+        abort(404)
+
+    response = Response(
+        create_profile(token),
+        mimetype="application/x-apple-aspen-config"
+    )
+
+    response.headers["Content-Disposition"] = (
+        'attachment; filename="ShenUDID.mobileconfig"'
+    )
+
+    response.headers["Cache-Control"] = "no-store"
+
+    return response
+
 
 @app.route(
     "/profile-service/<token>",
     methods=["GET", "POST"]
 )
 def profile_service(token):
-
-    if not validate_token(token):
-
-        return "Invalid enrollment session.", 403
+    try:
+        serializer.loads(token, max_age=TOKEN_TTL)
+    except (BadSignature, SignatureExpired):
+        return "Invalid or expired enrollment token.", 400
 
     if request.method == "GET":
+        return "ShenUDID Profile Service", 200
 
-        return "ShenUDID enrollment service is ready.", 200
+    data = request.get_data(cache=False)
 
-    raw_data = request.get_data()
-
-    if not raw_data or len(raw_data) > 2 * 1024 * 1024:
-
-        return "Invalid or oversized enrollment request.", 400
+    if not data or len(data) > 2_000_000:
+        return "Invalid device response.", 400
 
     try:
+        attributes = verify_device_response(data)
 
-        # Apple sends a CMS-signed plist.
-        # Extract the signed plist using OpenSSL.
+        udid = str(
+            attributes.get("UDID", "")
+        ).strip().upper()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        version = str(
+            attributes.get("VERSION", "")
+        ).strip()
 
-            input_file = os.path.join(
-                temp_dir,
-                "request.der"
-            )
+        if not re.fullmatch(r"[0-9A-F]{40}", udid):
+            return "Invalid UDID.", 400
 
-            output_file = os.path.join(
-                temp_dir,
-                "request.plist"
-            )
+        if not version or len(version) > 64:
+            return "Invalid iOS version.", 400
 
-            with open(input_file, "wb") as f:
-                f.write(raw_data)
+        devices = load_devices()
 
-            result = subprocess.run(
-                [
-                    OPENSSL,
-                    "cms",
-                    "-verify",
-                    "-inform",
-                    "DER",
-                    "-binary",
-                    "-noverify",
-                    "-in",
-                    input_file,
-                    "-out",
-                    output_file
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
-
-            if result.returncode != 0:
-
-                app.logger.error(
-                    "Apple CMS verification failed: %s",
-                    result.stderr[:2000]
-                )
-
-                return "Apple signed request verification failed.", 400
-
-            with open(output_file, "rb") as f:
-
-                data = plistlib.loads(f.read())
-
-        if not isinstance(data, dict):
-
-            return "Invalid device information.", 400
-
-        # Read requested attributes.
-
-        udid = data.get("UDID")
-
-        ios_version = data.get("VERSION")
-
-        if not isinstance(udid, str):
-
-            return "UDID was not supplied.", 400
-
-        if not isinstance(ios_version, str):
-
-            return "iOS version was not supplied.", 400
-
-        udid = udid.strip().upper()
-
-        ios_version = ios_version.strip()
-
-        # Validate UDID.
-
-        if not re.fullmatch(
-            r"[0-9A-F]{40}",
-            udid
+        if not any(
+            item.get("udid") == udid
+            for item in devices
         ):
+            devices.append({
+                "udid": udid,
+                "ios_version": version,
+                "created_at": datetime.now(
+                    timezone.utc
+                ).isoformat()
+            })
 
-            return "Invalid UDID format.", 400
+            save_devices(devices)
 
-        # Validate version.
+        signed_profile = create_signed_response()
 
-        if not re.fullmatch(
-            r"[0-9A-Za-z._-]{1,32}",
-            ios_version
-        ):
-
-            return "Invalid iOS version format.", 400
-
-        # Save device information.
-
-        save_udid(
-            udid,
-            ios_version
+        return Response(
+            signed_profile,
+            status=200,
+            mimetype="application/x-apple-aspen-config",
+            headers={"Cache-Control": "no-store"}
         )
-
-        app.logger.info(
-            "ShenUDID enrollment completed."
-        )
-
-        # Return profile response.
-
-        response_profile = {
-
-            "PayloadContent": [],
-
-            "PayloadDisplayName":
-                "ShenUDID",
-
-            "PayloadIdentifier":
-                "com.shenudid.response",
-
-            "PayloadUUID":
-                str(uuid.uuid4()),
-
-            "PayloadType":
-                "Configuration",
-
-            "PayloadVersion": 1
-        }
-
-        return plist_response(
-            response_profile
-        )
-
-    except subprocess.TimeoutExpired:
-
-        app.logger.exception(
-            "Apple request processing timed out."
-        )
-
-        return "Request processing timed out.", 500
 
     except Exception:
-
         app.logger.exception(
-            "ShenUDID enrollment failed."
+            "ShenUDID enrollment processing failed."
         )
 
-        return "Unable to process Apple enrollment request.", 400
+        return (
+            "Enrollment failed. Please contact the administrator.",
+            400
+        )
 
 
-# ==========================================
-# ADMIN UDID API
-# ==========================================
+@app.get("/success")
+def success():
+    return render_template("success.html")
 
-@app.route("/admin/udids")
-def admin_udids():
 
-    if not ADMIN_PASSWORD:
+@app.get("/admin/login")
+def admin_login():
+    return render_template("admin_login.html")
 
-        return "Admin access is not configured.", 503
 
-    supplied = request.headers.get(
-        "X-Admin-Password",
-        ""
+@app.post("/admin/login")
+def admin_login_post():
+    password = request.form.get("password", "")
+
+    if not ADMIN_PASSWORD_HASH:
+        flash("Admin password is not configured.", "error")
+
+    elif check_password_hash(
+        ADMIN_PASSWORD_HASH,
+        password
+    ):
+        session["admin"] = True
+        return redirect(url_for("admin"))
+
+    else:
+        flash("Incorrect password.", "error")
+
+    return redirect(url_for("admin_login"))
+
+
+@app.get("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
+
+
+@app.get("/admin")
+@admin_required
+def admin():
+    devices = sorted(
+        load_devices(),
+        key=lambda item: item.get("created_at", ""),
+        reverse=True
     )
 
-    if not secrets.compare_digest(
-        supplied,
-        ADMIN_PASSWORD
-    ):
+    return render_template(
+        "admin.html",
+        devices=devices
+    )
 
-        return "Unauthorized", 401
 
-    try:
+@app.post("/admin/delete/<udid>")
+@admin_required
+def delete_device(udid):
+    devices = [
+        item for item in load_devices()
+        if item.get("udid") != udid
+    ]
 
-        with file_lock:
+    save_devices(devices)
 
-            with open(
-                DATA_FILE,
-                "r",
-                encoding="utf-8"
-            ) as f:
+    flash("Device deleted.", "success")
 
-                records = json.load(f)
+    return redirect(url_for("admin"))
 
-    except FileNotFoundError:
 
-        records = []
+@app.get("/admin/export.csv")
+@admin_required
+def export_csv():
+    import csv
+    import io
 
-    except (ValueError, OSError):
+    output = io.StringIO()
+    writer = csv.writer(output)
 
-        return "Unable to read database.", 500
+    writer.writerow([
+        "UDID",
+        "iOS Version",
+        "Created At"
+    ])
 
+    for item in load_devices():
+        writer.writerow([
+            item.get("udid", ""),
+            item.get("ios_version", ""),
+            item.get("created_at", "")
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition":
+            "attachment; filename=shenudid.csv"
+        }
+    )
+
+
+@app.get("/health")
+def health():
     return jsonify({
-        "udids": records
+        "status": "ok",
+        "service": "ShenUDID"
     })
 
 
-# ==========================================
-# RUN
-# ==========================================
-
 if __name__ == "__main__":
-
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
