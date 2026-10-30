@@ -23,7 +23,7 @@ app.secret_key = os.environ.get("SECRET_KEY")
 if not app.secret_key:
     raise RuntimeError("Please configure SECRET_KEY in Render environment variables.")
 
-BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
+BASE_URL = os.environ.get("BASE_URL", "https://shenudidkh.onrender.com").rstrip("/")
 DATA_DIR = os.environ.get("DATA_DIR", "/var/data")
 DATA_FILE = os.path.join(DATA_DIR, "udids.json")
 
