@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShenUDID - Get Your UDID</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+    <a class="logo" href="/">ShenUDID</a>
+    <a href="/admin/login">Admin</a>
+</header>
+
+<main>
+    <div class="hero">
+        <div class="tag">IPHONE DEVICE TOOL</div>
+
+        <h1>Get Your<br><span>Device UDID</span></h1>
+
+        <p>
+            Retrieve your iPhone or iPad UDID and iOS version
+            using Apple's configuration profile process.
+        </p>
+
+        <div class="card">
+            <h2>How it works</h2>
+
+            <div class="step">01 — Tap Get My UDID</div>
+            <div class="step">02 — Download the profile</div>
+            <div class="step">03 — Install it in iPhone Settings</div>
+
+            <form action="/start" method="POST">
+                <label class="consent">
+                    <input
+                        type="checkbox"
+                        name="consent"
+                        value="yes"
+                        required
+                    >
+                    I agree to share my UDID and iOS version
+                    with ShenUDID.
+                </label>
+
+                <button type="submit">
+                    Get My UDID →
+                </button>
+            </form>
+        </div>
+
+        <div class="privacy">
+            <strong>Privacy protection</strong>
+            <p>
+                Only UDID and iOS version are requested.
+                No IMEI or ICCID is collected.
+            </p>
+        </div>
+    </div>
+</main>
+
+<footer>
+    ShenUDID © 2026
+</footer>
+
+</body>
+</html>
