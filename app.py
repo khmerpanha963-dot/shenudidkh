@@ -19,7 +19,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 app = Flask(__name__)
 
-app.secret_key = os.environ.get("e1059d4a6029daf0de7e852d32842d412cd55acdc003fb1716ddbef0e1c06923")
+app.secret_key = os.environ.get("SECRET_KEY")
 if not app.secret_key:
     raise RuntimeError("Please configure SECRET_KEY in Render environment variables.")
 
