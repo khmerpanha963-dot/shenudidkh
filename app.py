@@ -24,7 +24,7 @@ if not app.secret_key:
     raise RuntimeError("SECRET_KEY environment variable is required.")
 
 BASE_URL = os.environ.get(
-    "BASE_URL", "https://shenudidkh.vercel.app"
+    "BASE_URL", "https://shenudidkh.onrender.com"
 ).rstrip("/")
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
